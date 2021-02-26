@@ -1,0 +1,1093 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<microprocessor name="CSV Logger" description="Sends numbers to external program to create logs in CSV format. Source and binnaries available at https://github.com/Fernir2000/" hide_in_inventory="false" width="2" length="2" id_counter="243" id_counter_node="4" transform_index="0" sym0="0" sym1="0" sym2="7644" sym3="5444" sym4="1348" sym5="1348" sym6="7620" sym7="0" sym8="2248" sym9="2324" sym10="5252" sym11="5204" sym12="5512" sym13="0" sym14="0" sym15="0">
+	<nodes>
+		<n id="1" component_id="2" built_slot_index="0">
+			<node orientation="0" label="Data" mode="1" type="5" description="Input data, number channels 1..32 will be sent to the log acording to settings in properties." flags="0">
+				<position x="0" y="0" z="0"/>
+			</node>
+		</n>
+		<n id="2" component_id="6" built_slot_index="0">
+			<node orientation="0" label="Status Display" mode="0" type="6" description="2x2 screen displaying logger status." flags="0">
+				<position x="1" y="0" z="0"/>
+			</node>
+		</n>
+		<n id="3" component_id="11" built_slot_index="0">
+			<node orientation="0" label="Transmit" mode="1" type="0" description="Enables logging if connection is established." flags="0">
+				<position x="0" y="0" z="1"/>
+			</node>
+		</n>
+		<n id="4" component_id="14" built_slot_index="0">
+			<node orientation="0" label="Reconnect" mode="1" type="0" description="Will attempt to initiate connection on off to on transition." flags="0">
+				<position x="1" y="0" z="1"/>
+			</node>
+		</n>
+	</nodes>
+	<group id="0">
+		<pos x="0" y="0"/>
+		<data type="1936269312" name="" desc="">
+			<inputs/>
+			<outputs/>
+		</data>
+		<components>
+			<c type="56">
+				<object id="7" script='--[[
+Input
+Number channnel 1..32 - data to be logged
+Boolean channel 1 - transmit data
+Boolean channel 2 - reconnect 1 tick impulse will start reconnect sequence as long as controller is in CONNECTED_IDLE or NO_RESPONSE state
+Number Property "Sampling frequency Hz" - sampling frequency, resulting sampling frequency might be higher if 60/frequency is not a natural number
+Number Property "Data format" - number format 0-"%g" 1-"%.17g" 2-"%a" 3-Custom 
+Text Property "Custom format string" - printf like decription of value format must take at most one value and be valid format string
+Text Property "chanel n name" - channel name that will be put in CSV header line, n in 1..32
+Boolean Property "chanel n" - channel active if true/on channel is enabled, n in 1..32
+Output
+Video current status sized for 2x2 screen
+]]--
+State="INIT"
+PORT=18080
+headerSent=false
+channelEnabled={}
+channelName={}
+lastResp=""
+channelCount=0
+busy=false
+lineCount=0
+formats={}
+formats[0]="%g"
+formats[1]="%.17g"
+formats[2]="%a"
+formats[3]=property.getText("Custom format string")
+counter=0
+function onTick()
+	if State=="CONNECTED_IDLE" and headerSent and input.getBool(1) then State="TRANSMIT" end
+	if State=="INIT" and not busy then
+		async.httpGet(PORT,"REQC")
+		busy=true
+		State="WAIT_FOR_CONNECTION"
+		for i=1,32 do
+			channelEnabled[i]=property.getBool(string.format("channel %d",i))
+			if (channelEnabled[i])then channelCount=channelCount+1 end
+			channelName[i]=(property.getText(string.format("channel %d name",i)) or "")
+		end
+	elseif State=="CONNECTED_IDLE" and not headerSent and not busy then
+		State="SENDING_HEADER"
+		msg="HEAD "..channelCount.."\n"
+		for i=1,32 do
+			if channelEnabled[i] then
+				msg=msg..channelName[i].."\n"
+			end
+		end
+		lastResp=msg.."\n---"
+		async.httpGet(PORT,msg)
+		busy=true
+	elseif State=="TRANSMIT" or State=="TRANSMIT_LAST" then
+		if not input.getBool(1) then State="TRANSMIT_LAST" end
+		counter=(counter+1)%(math.max(1,math.floor(60/(property.getNumber("Sampling frequency Hz")))))
+		if counter==0 then
+		msg=msg.."LINE "..channelCount.."\n"
+		for i=1,32 do
+			if channelEnabled[i] then
+				msg=msg..formats[property.getNumber("Data format")]:format(input.getNumber(i)).."\n"
+			end
+		end
+		lineCount=lineCount+1
+		lastResp=msg.."\n---"
+			if not busy then 
+			msg="DATA "..lineCount.."\n"..msg 
+			if State=="TRANSMIT_LAST" then msg=msg.."END\n" end
+			async.httpGet(PORT,msg)
+			lineCount=0
+			busy=true
+			msg=""
+			if State=="TRANSMIT_LAST" then State="CONNECTED_IDLE" end
+			end
+		end
+	end
+	if input.getBool(2) and (State=="NO_RESPONSE" or State=="CONNECTED_IDLE") then
+		State="INIT"
+		headerSent=false
+		busy=false
+		channelEnabled={}
+		channelName={}
+		channelCount=0
+	end
+end
+
+function onDraw()
+	if State=="NO_RESPONSE" then
+	statusMsg="No connection"
+	elseif State=="CONNECTED_IDLE" then
+	statusMsg="Connected"
+	elseif State=="TRANSMIT" then
+	statusMsg="Transmitting"
+	elseif State=="TRANSMIT_LAST" then
+	statusMsg="Finishing\ntransmission"
+	elseif State=="INIT" or State=="WAIT_FOR_CONNECTION" then
+	statusMsg="Connecting"
+	elseif State=="SENDING_HEADER" then
+	statusMsg="Sending header"
+	else statusMsg="Invalid state:\n"..Status
+	end
+    screen.drawTextBox(0,0,64,64,statusMsg,0,0)
+
+end
+function httpReply(port, request_body, response_body)
+
+	lastResp=request_body.."\n---\n"..response_body.."\n---"
+    if PORT~=port then return -1 end
+	busy=false
+    if request_body=="REQC" then
+    	if response_body=="READY" then
+    		State="CONNECTED_IDLE"
+    	else
+    		State="NO_RESPONSE"
+    	end
+    elseif request_body:sub(1,4)=="HEAD" then
+    	if response_body=="READY" then
+    		headerSent=true
+			State="CONNECTED_IDLE"
+    	else
+			State="NO_RESPONSE"
+		end
+    elseif request_body:sub(1,4)=="DATA" then
+    	if response_body=="READY" then
+		else
+			State="NO_RESPONSE"
+		end
+	end
+end'>
+					<pos x="2.75" y="0.75"/>
+					<in1 component_id="10" node_index="0">
+						<v bools="0" 01="263" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+					</in1>
+					<in2 component_id="0" node_index="0">
+						<v/>
+					</in2>
+					<out1>
+						<v bools="0" 01="0" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+					</out1>
+					<out2>
+						<v/>
+					</out2>
+				</object>
+			</c>
+			<c type="41">
+				<object id="10" count="2" offset="0">
+					<pos x="1.5" y="0.5"/>
+					<inc component_id="12" node_index="0">
+						<v bools="0" 01="264" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+					</inc>
+					<in1 component_id="11" node_index="0" v="false"/>
+					<in2 component_id="15" node_index="0" v="false"/>
+					<out1>
+						<v bools="0" 01="264" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+					</out1>
+				</object>
+			</c>
+			<c type="40">
+				<object id="12" count="1" offset="0">
+					<pos x="0.25" y="0.75"/>
+					<inc component_id="2" node_index="0">
+						<v bools="0" 01="0" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+					</inc>
+					<in1 component_id="13" node_index="0" v="265"/>
+					<out1>
+						<v bools="0" 01="265" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+					</out1>
+				</object>
+			</c>
+			<c type="45">
+				<object id="13" e="x+1">
+					<pos x="-1.5" y="0.5"/>
+					<in1 component_id="13" node_index="0" v="265"/>
+					<out1 v="266"/>
+				</object>
+			</c>
+			<c type="48">
+				<object id="15" m="1" p="false">
+					<pos x="0.25" y="-0.25"/>
+					<in1 component_id="14" node_index="0" v="false"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="20">
+				<object id="47" name="Data format" v="3" i="3">
+					<pos x="-5" y="2.5"/>
+					<out1 v="3"/>
+					<items>
+						<i l="Human readable short">
+							<v text="0" value="0"/>
+						</i>
+						<i l="Human readable long ">
+							<v text="1" value="1"/>
+						</i>
+						<i l="Hexadecimal double">
+							<v text="2" value="2"/>
+						</i>
+						<i l="Custom">
+							<v text="3" value="3"/>
+						</i>
+					</items>
+				</object>
+			</c>
+			<c type="34">
+				<object id="114" n="Sampling frequency Hz">
+					<pos x="-5" y="1.5"/>
+					<out1 v="60"/>
+					<v text="60" value="60"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="115" n="Custom format string" v="%.10g">
+					<pos x="-5" y="2"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="180" n="channel 1" on="Enabled" off="Disabled" v="true">
+					<pos x="-7.75" y="-0.25"/>
+					<out1 v="true"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="181" n="channel 1 name" v="Test Value">
+					<pos x="-7.75" y="0.25"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="182" n="channel 2" on="Enabled" off="Disabled" v="false">
+					<pos x="-7.75" y="-1.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="183" n="channel 2 name" v="Test Value 2">
+					<pos x="-7.75" y="-0.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="184" n="channel 3" on="Enabled" off="Disabled" v="false">
+					<pos x="-7.75" y="-2.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="185" n="channel 3 name" v="Test Value 3">
+					<pos x="-7.75" y="-1.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="186" n="channel 4" on="Enabled" off="Disabled" v="false">
+					<pos x="-7.75" y="-3.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="187" n="channel 4 name" v="Test Value 4">
+					<pos x="-7.75" y="-2.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="188" n="channel 5" on="Enabled" off="Disabled" v="false">
+					<pos x="-7.75" y="-4.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="189" n="channel 5 name" v="Test Value 5">
+					<pos x="-7.75" y="-3.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="190" n="channel 6" on="Enabled" off="Disabled" v="false">
+					<pos x="-7.75" y="-5.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="191" n="channel 6 name" v="Test Value 6">
+					<pos x="-7.75" y="-4.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="192" n="channel 7" on="Enabled" off="Disabled" v="false">
+					<pos x="-7.75" y="-6.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="193" n="channel 7 name" v="Test Value 7">
+					<pos x="-7.75" y="-5.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="194" n="channel 8" on="Enabled" off="Disabled" v="false">
+					<pos x="-7.75" y="-7.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="195" n="channel 8 name" v="Test Value 8">
+					<pos x="-7.75" y="-6.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="196" n="channel 9" on="Enabled" off="Disabled" v="false">
+					<pos x="-6.5" y="-0.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="197" n="channel 9 name" v="Test Value 9">
+					<pos x="-6.5" y="0.25"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="198" n="channel 10" on="Enabled" off="Disabled" v="false">
+					<pos x="-6.5" y="-1.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="199" n="channel 10 name" v="Test Value 10">
+					<pos x="-6.5" y="-0.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="200" n="channel 11" on="Enabled" off="Disabled" v="false">
+					<pos x="-6.5" y="-2.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="201" n="channel 11 name" v="Test Value 11">
+					<pos x="-6.5" y="-1.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="202" n="channel 12" on="Enabled" off="Disabled" v="false">
+					<pos x="-6.5" y="-3.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="203" n="channel 12 name" v="Test Value 12">
+					<pos x="-6.5" y="-2.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="204" n="channel 13" on="Enabled" off="Disabled" v="false">
+					<pos x="-6.5" y="-4.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="205" n="channel 13 name" v="Test Value 13">
+					<pos x="-6.5" y="-3.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="206" n="channel 14" on="Enabled" off="Disabled" v="false">
+					<pos x="-6.5" y="-5.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="207" n="channel 14 name" v="Test Value 14">
+					<pos x="-6.5" y="-4.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="208" n="channel 15" on="Enabled" off="Disabled" v="false">
+					<pos x="-6.5" y="-6.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="209" n="channel 15 name" v="Test Value 15">
+					<pos x="-6.5" y="-5.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="210" n="channel 16" on="Enabled" off="Disabled" v="false">
+					<pos x="-6.5" y="-7.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="211" n="channel 16 name" v="Test Value 16">
+					<pos x="-6.5" y="-6.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="212" n="channel 17" on="Enabled" off="Disabled" v="false">
+					<pos x="-5.25" y="-0.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="213" n="channel 17 name" v="Test Value 17">
+					<pos x="-5.25" y="0.25"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="214" n="channel 18" on="Enabled" off="Disabled" v="false">
+					<pos x="-5.25" y="-1.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="215" n="channel 18 name" v="Test Value 18">
+					<pos x="-5.25" y="-0.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="216" n="channel 19" on="Enabled" off="Disabled" v="false">
+					<pos x="-5.25" y="-2.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="217" n="channel 19 name" v="Test Value 19">
+					<pos x="-5.25" y="-1.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="218" n="channel 20" on="Enabled" off="Disabled" v="false">
+					<pos x="-5.25" y="-3.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="219" n="channel 20 name" v="Test Value 20">
+					<pos x="-5.25" y="-2.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="220" n="channel 21" on="Enabled" off="Disabled" v="false">
+					<pos x="-5.25" y="-4.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="221" n="channel 21 name" v="Test Value 21">
+					<pos x="-5.25" y="-3.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="222" n="channel 22" on="Enabled" off="Disabled" v="false">
+					<pos x="-5.25" y="-5.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="223" n="channel 22 name" v="Test Value 22">
+					<pos x="-5.25" y="-4.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="224" n="channel 23" on="Enabled" off="Disabled" v="false">
+					<pos x="-5.25" y="-6.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="225" n="channel 23 name" v="Test Value 23">
+					<pos x="-5.25" y="-5.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="226" n="channel 24" on="Enabled" off="Disabled" v="false">
+					<pos x="-5.25" y="-7.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="227" n="channel 24 name" v="Test Value 24">
+					<pos x="-5.25" y="-6.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="228" n="channel 25" on="Enabled" off="Disabled" v="false">
+					<pos x="-4" y="-0.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="229" n="channel 25 name" v="Test Value 25">
+					<pos x="-4" y="0.25"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="230" n="channel 26" on="Enabled" off="Disabled" v="false">
+					<pos x="-4" y="-1.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="231" n="channel 26 name" v="Test Value 26">
+					<pos x="-4" y="-0.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="232" n="channel 27" on="Enabled" off="Disabled" v="false">
+					<pos x="-4" y="-2.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="233" n="channel 27 name" v="Test Value 27">
+					<pos x="-4" y="-1.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="234" n="channel 28" on="Enabled" off="Disabled" v="false">
+					<pos x="-4" y="-3.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="235" n="channel 28 name" v="Test Value 28">
+					<pos x="-4" y="-2.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="236" n="channel 29" on="Enabled" off="Disabled" v="false">
+					<pos x="-4" y="-4.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="237" n="channel 29 name" v="Test Value 29">
+					<pos x="-4" y="-3.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="238" n="channel 30" on="Enabled" off="Disabled" v="false">
+					<pos x="-4" y="-5.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="239" n="channel 30 name" v="Test Value 30">
+					<pos x="-4" y="-4.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="240" n="channel 31" on="Enabled" off="Disabled" v="false">
+					<pos x="-4" y="-6.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="241" n="channel 31 name" v="Test Value 31">
+					<pos x="-4" y="-5.75"/>
+				</object>
+			</c>
+			<c type="33">
+				<object id="242" n="channel 32" on="Enabled" off="Disabled" v="false">
+					<pos x="-4" y="-7.25"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="58">
+				<object id="243" n="channel 32 name" v="Test Value 32">
+					<pos x="-4" y="-6.75"/>
+				</object>
+			</c>
+		</components>
+		<components_bridge>
+			<c type="4">
+				<object id="2">
+					<pos x="-1.5" y="1"/>
+					<in1 component_id="0" node_index="0">
+						<v bools="0" 01="0" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+					</in1>
+					<out1>
+						<v bools="0" 01="0" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+					</out1>
+				</object>
+			</c>
+			<c type="7">
+				<object id="6">
+					<pos x="4" y="0.75"/>
+					<in1 component_id="7" node_index="1">
+						<v/>
+					</in1>
+					<out1>
+						<v/>
+					</out1>
+				</object>
+			</c>
+			<c type="0">
+				<object id="11">
+					<pos x="0.25" y="0.25"/>
+					<in1 component_id="0" node_index="0" v="false"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+			<c type="0">
+				<object id="14">
+					<pos x="-1" y="-0.25"/>
+					<in1 component_id="0" node_index="0" v="false"/>
+					<out1 v="false"/>
+				</object>
+			</c>
+		</components_bridge>
+		<groups/>
+		<component_states>
+			<c0 id="7" script='--[[
+Input
+Number channnel 1..32 - data to be logged
+Boolean channel 1 - transmit data
+Boolean channel 2 - reconnect 1 tick impulse will start reconnect sequence as long as controller is in CONNECTED_IDLE or NO_RESPONSE state
+Number Property "Sampling frequency Hz" - sampling frequency, resulting sampling frequency might be higher if 60/frequency is not a natural number
+Number Property "Data format" - number format 0-"%g" 1-"%.17g" 2-"%a" 3-Custom 
+Text Property "Custom format string" - printf like decription of value format must take at most one value and be valid format string
+Text Property "chanel n name" - channel name that will be put in CSV header line, n in 1..32
+Boolean Property "chanel n" - channel active if true/on channel is enabled, n in 1..32
+Output
+Video current status sized for 2x2 screen
+]]--
+State="INIT"
+PORT=18080
+headerSent=false
+channelEnabled={}
+channelName={}
+lastResp=""
+channelCount=0
+busy=false
+lineCount=0
+formats={}
+formats[0]="%g"
+formats[1]="%.17g"
+formats[2]="%a"
+formats[3]=property.getText("Custom format string")
+counter=0
+function onTick()
+	if State=="CONNECTED_IDLE" and headerSent and input.getBool(1) then State="TRANSMIT" end
+	if State=="INIT" and not busy then
+		async.httpGet(PORT,"REQC")
+		busy=true
+		State="WAIT_FOR_CONNECTION"
+		for i=1,32 do
+			channelEnabled[i]=property.getBool(string.format("channel %d",i))
+			if (channelEnabled[i])then channelCount=channelCount+1 end
+			channelName[i]=(property.getText(string.format("channel %d name",i)) or "")
+		end
+	elseif State=="CONNECTED_IDLE" and not headerSent and not busy then
+		State="SENDING_HEADER"
+		msg="HEAD "..channelCount.."\n"
+		for i=1,32 do
+			if channelEnabled[i] then
+				msg=msg..channelName[i].."\n"
+			end
+		end
+		lastResp=msg.."\n---"
+		async.httpGet(PORT,msg)
+		busy=true
+	elseif State=="TRANSMIT" or State=="TRANSMIT_LAST" then
+		if not input.getBool(1) then State="TRANSMIT_LAST" end
+		counter=(counter+1)%(math.max(1,math.floor(60/(property.getNumber("Sampling frequency Hz")))))
+		if counter==0 then
+		msg=msg.."LINE "..channelCount.."\n"
+		for i=1,32 do
+			if channelEnabled[i] then
+				msg=msg..formats[property.getNumber("Data format")]:format(input.getNumber(i)).."\n"
+			end
+		end
+		lineCount=lineCount+1
+		lastResp=msg.."\n---"
+			if not busy then 
+			msg="DATA "..lineCount.."\n"..msg 
+			if State=="TRANSMIT_LAST" then msg=msg.."END\n" end
+			async.httpGet(PORT,msg)
+			lineCount=0
+			busy=true
+			msg=""
+			if State=="TRANSMIT_LAST" then State="CONNECTED_IDLE" end
+			end
+		end
+	end
+	if input.getBool(2) and (State=="NO_RESPONSE" or State=="CONNECTED_IDLE") then
+		State="INIT"
+		headerSent=false
+		busy=false
+		channelEnabled={}
+		channelName={}
+		channelCount=0
+	end
+end
+
+function onDraw()
+	if State=="NO_RESPONSE" then
+	statusMsg="No connection"
+	elseif State=="CONNECTED_IDLE" then
+	statusMsg="Connected"
+	elseif State=="TRANSMIT" then
+	statusMsg="Transmitting"
+	elseif State=="TRANSMIT_LAST" then
+	statusMsg="Finishing\ntransmission"
+	elseif State=="INIT" or State=="WAIT_FOR_CONNECTION" then
+	statusMsg="Connecting"
+	elseif State=="SENDING_HEADER" then
+	statusMsg="Sending header"
+	else statusMsg="Invalid state:\n"..Status
+	end
+    screen.drawTextBox(0,0,64,64,statusMsg,0,0)
+
+end
+function httpReply(port, request_body, response_body)
+
+	lastResp=request_body.."\n---\n"..response_body.."\n---"
+    if PORT~=port then return -1 end
+	busy=false
+    if request_body=="REQC" then
+    	if response_body=="READY" then
+    		State="CONNECTED_IDLE"
+    	else
+    		State="NO_RESPONSE"
+    	end
+    elseif request_body:sub(1,4)=="HEAD" then
+    	if response_body=="READY" then
+    		headerSent=true
+			State="CONNECTED_IDLE"
+    	else
+			State="NO_RESPONSE"
+		end
+    elseif request_body:sub(1,4)=="DATA" then
+    	if response_body=="READY" then
+		else
+			State="NO_RESPONSE"
+		end
+	end
+end'>
+				<pos x="2.75" y="0.75"/>
+				<in1 component_id="10" node_index="0">
+					<v bools="0" 01="263" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+				</in1>
+				<in2 component_id="0" node_index="0">
+					<v/>
+				</in2>
+				<out1>
+					<v bools="0" 01="0" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+				</out1>
+				<out2>
+					<v/>
+				</out2>
+			</c0>
+			<c1 id="10" count="2" offset="0">
+				<pos x="1.5" y="0.5"/>
+				<inc component_id="12" node_index="0">
+					<v bools="0" 01="264" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+				</inc>
+				<in1 component_id="11" node_index="0" v="false"/>
+				<in2 component_id="15" node_index="0" v="false"/>
+				<out1>
+					<v bools="0" 01="264" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+				</out1>
+			</c1>
+			<c2 id="12" count="1" offset="0">
+				<pos x="0.25" y="0.75"/>
+				<inc component_id="2" node_index="0">
+					<v bools="0" 01="0" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+				</inc>
+				<in1 component_id="13" node_index="0" v="265"/>
+				<out1>
+					<v bools="0" 01="265" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+				</out1>
+			</c2>
+			<c3 id="13" e="x+1">
+				<pos x="-1.5" y="0.5"/>
+				<in1 component_id="13" node_index="0" v="265"/>
+				<out1 v="266"/>
+			</c3>
+			<c4 id="15" m="1" p="false">
+				<pos x="0.25" y="-0.25"/>
+				<in1 component_id="14" node_index="0" v="false"/>
+				<out1 v="false"/>
+			</c4>
+			<c5 id="47" name="Data format" v="3" i="3">
+				<pos x="-5" y="2.5"/>
+				<out1 v="3"/>
+				<items>
+					<i l="Human readable short">
+						<v text="0" value="0"/>
+					</i>
+					<i l="Human readable long ">
+						<v text="1" value="1"/>
+					</i>
+					<i l="Hexadecimal double">
+						<v text="2" value="2"/>
+					</i>
+					<i l="Custom">
+						<v text="3" value="3"/>
+					</i>
+				</items>
+			</c5>
+			<c6 id="114" n="Sampling frequency Hz">
+				<pos x="-5" y="1.5"/>
+				<out1 v="60"/>
+				<v text="60" value="60"/>
+			</c6>
+			<c7 id="115" n="Custom format string" v="%.10g">
+				<pos x="-5" y="2"/>
+			</c7>
+			<c8 id="180" n="channel 1" on="Enabled" off="Disabled" v="true">
+				<pos x="-7.75" y="-0.25"/>
+				<out1 v="true"/>
+			</c8>
+			<c9 id="181" n="channel 1 name" v="Test Value">
+				<pos x="-7.75" y="0.25"/>
+			</c9>
+			<c10 id="182" n="channel 2" on="Enabled" off="Disabled" v="false">
+				<pos x="-7.75" y="-1.25"/>
+				<out1 v="false"/>
+			</c10>
+			<c11 id="183" n="channel 2 name" v="Test Value 2">
+				<pos x="-7.75" y="-0.75"/>
+			</c11>
+			<c12 id="184" n="channel 3" on="Enabled" off="Disabled" v="false">
+				<pos x="-7.75" y="-2.25"/>
+				<out1 v="false"/>
+			</c12>
+			<c13 id="185" n="channel 3 name" v="Test Value 3">
+				<pos x="-7.75" y="-1.75"/>
+			</c13>
+			<c14 id="186" n="channel 4" on="Enabled" off="Disabled" v="false">
+				<pos x="-7.75" y="-3.25"/>
+				<out1 v="false"/>
+			</c14>
+			<c15 id="187" n="channel 4 name" v="Test Value 4">
+				<pos x="-7.75" y="-2.75"/>
+			</c15>
+			<c16 id="188" n="channel 5" on="Enabled" off="Disabled" v="false">
+				<pos x="-7.75" y="-4.25"/>
+				<out1 v="false"/>
+			</c16>
+			<c17 id="189" n="channel 5 name" v="Test Value 5">
+				<pos x="-7.75" y="-3.75"/>
+			</c17>
+			<c18 id="190" n="channel 6" on="Enabled" off="Disabled" v="false">
+				<pos x="-7.75" y="-5.25"/>
+				<out1 v="false"/>
+			</c18>
+			<c19 id="191" n="channel 6 name" v="Test Value 6">
+				<pos x="-7.75" y="-4.75"/>
+			</c19>
+			<c20 id="192" n="channel 7" on="Enabled" off="Disabled" v="false">
+				<pos x="-7.75" y="-6.25"/>
+				<out1 v="false"/>
+			</c20>
+			<c21 id="193" n="channel 7 name" v="Test Value 7">
+				<pos x="-7.75" y="-5.75"/>
+			</c21>
+			<c22 id="194" n="channel 8" on="Enabled" off="Disabled" v="false">
+				<pos x="-7.75" y="-7.25"/>
+				<out1 v="false"/>
+			</c22>
+			<c23 id="195" n="channel 8 name" v="Test Value 8">
+				<pos x="-7.75" y="-6.75"/>
+			</c23>
+			<c24 id="196" n="channel 9" on="Enabled" off="Disabled" v="false">
+				<pos x="-6.5" y="-0.25"/>
+				<out1 v="false"/>
+			</c24>
+			<c25 id="197" n="channel 9 name" v="Test Value 9">
+				<pos x="-6.5" y="0.25"/>
+			</c25>
+			<c26 id="198" n="channel 10" on="Enabled" off="Disabled" v="false">
+				<pos x="-6.5" y="-1.25"/>
+				<out1 v="false"/>
+			</c26>
+			<c27 id="199" n="channel 10 name" v="Test Value 10">
+				<pos x="-6.5" y="-0.75"/>
+			</c27>
+			<c28 id="200" n="channel 11" on="Enabled" off="Disabled" v="false">
+				<pos x="-6.5" y="-2.25"/>
+				<out1 v="false"/>
+			</c28>
+			<c29 id="201" n="channel 11 name" v="Test Value 11">
+				<pos x="-6.5" y="-1.75"/>
+			</c29>
+			<c30 id="202" n="channel 12" on="Enabled" off="Disabled" v="false">
+				<pos x="-6.5" y="-3.25"/>
+				<out1 v="false"/>
+			</c30>
+			<c31 id="203" n="channel 12 name" v="Test Value 12">
+				<pos x="-6.5" y="-2.75"/>
+			</c31>
+			<c32 id="204" n="channel 13" on="Enabled" off="Disabled" v="false">
+				<pos x="-6.5" y="-4.25"/>
+				<out1 v="false"/>
+			</c32>
+			<c33 id="205" n="channel 13 name" v="Test Value 13">
+				<pos x="-6.5" y="-3.75"/>
+			</c33>
+			<c34 id="206" n="channel 14" on="Enabled" off="Disabled" v="false">
+				<pos x="-6.5" y="-5.25"/>
+				<out1 v="false"/>
+			</c34>
+			<c35 id="207" n="channel 14 name" v="Test Value 14">
+				<pos x="-6.5" y="-4.75"/>
+			</c35>
+			<c36 id="208" n="channel 15" on="Enabled" off="Disabled" v="false">
+				<pos x="-6.5" y="-6.25"/>
+				<out1 v="false"/>
+			</c36>
+			<c37 id="209" n="channel 15 name" v="Test Value 15">
+				<pos x="-6.5" y="-5.75"/>
+			</c37>
+			<c38 id="210" n="channel 16" on="Enabled" off="Disabled" v="false">
+				<pos x="-6.5" y="-7.25"/>
+				<out1 v="false"/>
+			</c38>
+			<c39 id="211" n="channel 16 name" v="Test Value 16">
+				<pos x="-6.5" y="-6.75"/>
+			</c39>
+			<c40 id="212" n="channel 17" on="Enabled" off="Disabled" v="false">
+				<pos x="-5.25" y="-0.25"/>
+				<out1 v="false"/>
+			</c40>
+			<c41 id="213" n="channel 17 name" v="Test Value 17">
+				<pos x="-5.25" y="0.25"/>
+			</c41>
+			<c42 id="214" n="channel 18" on="Enabled" off="Disabled" v="false">
+				<pos x="-5.25" y="-1.25"/>
+				<out1 v="false"/>
+			</c42>
+			<c43 id="215" n="channel 18 name" v="Test Value 18">
+				<pos x="-5.25" y="-0.75"/>
+			</c43>
+			<c44 id="216" n="channel 19" on="Enabled" off="Disabled" v="false">
+				<pos x="-5.25" y="-2.25"/>
+				<out1 v="false"/>
+			</c44>
+			<c45 id="217" n="channel 19 name" v="Test Value 19">
+				<pos x="-5.25" y="-1.75"/>
+			</c45>
+			<c46 id="218" n="channel 20" on="Enabled" off="Disabled" v="false">
+				<pos x="-5.25" y="-3.25"/>
+				<out1 v="false"/>
+			</c46>
+			<c47 id="219" n="channel 20 name" v="Test Value 20">
+				<pos x="-5.25" y="-2.75"/>
+			</c47>
+			<c48 id="220" n="channel 21" on="Enabled" off="Disabled" v="false">
+				<pos x="-5.25" y="-4.25"/>
+				<out1 v="false"/>
+			</c48>
+			<c49 id="221" n="channel 21 name" v="Test Value 21">
+				<pos x="-5.25" y="-3.75"/>
+			</c49>
+			<c50 id="222" n="channel 22" on="Enabled" off="Disabled" v="false">
+				<pos x="-5.25" y="-5.25"/>
+				<out1 v="false"/>
+			</c50>
+			<c51 id="223" n="channel 22 name" v="Test Value 22">
+				<pos x="-5.25" y="-4.75"/>
+			</c51>
+			<c52 id="224" n="channel 23" on="Enabled" off="Disabled" v="false">
+				<pos x="-5.25" y="-6.25"/>
+				<out1 v="false"/>
+			</c52>
+			<c53 id="225" n="channel 23 name" v="Test Value 23">
+				<pos x="-5.25" y="-5.75"/>
+			</c53>
+			<c54 id="226" n="channel 24" on="Enabled" off="Disabled" v="false">
+				<pos x="-5.25" y="-7.25"/>
+				<out1 v="false"/>
+			</c54>
+			<c55 id="227" n="channel 24 name" v="Test Value 24">
+				<pos x="-5.25" y="-6.75"/>
+			</c55>
+			<c56 id="228" n="channel 25" on="Enabled" off="Disabled" v="false">
+				<pos x="-4" y="-0.25"/>
+				<out1 v="false"/>
+			</c56>
+			<c57 id="229" n="channel 25 name" v="Test Value 25">
+				<pos x="-4" y="0.25"/>
+			</c57>
+			<c58 id="230" n="channel 26" on="Enabled" off="Disabled" v="false">
+				<pos x="-4" y="-1.25"/>
+				<out1 v="false"/>
+			</c58>
+			<c59 id="231" n="channel 26 name" v="Test Value 26">
+				<pos x="-4" y="-0.75"/>
+			</c59>
+			<c60 id="232" n="channel 27" on="Enabled" off="Disabled" v="false">
+				<pos x="-4" y="-2.25"/>
+				<out1 v="false"/>
+			</c60>
+			<c61 id="233" n="channel 27 name" v="Test Value 27">
+				<pos x="-4" y="-1.75"/>
+			</c61>
+			<c62 id="234" n="channel 28" on="Enabled" off="Disabled" v="false">
+				<pos x="-4" y="-3.25"/>
+				<out1 v="false"/>
+			</c62>
+			<c63 id="235" n="channel 28 name" v="Test Value 28">
+				<pos x="-4" y="-2.75"/>
+			</c63>
+			<c64 id="236" n="channel 29" on="Enabled" off="Disabled" v="false">
+				<pos x="-4" y="-4.25"/>
+				<out1 v="false"/>
+			</c64>
+			<c65 id="237" n="channel 29 name" v="Test Value 29">
+				<pos x="-4" y="-3.75"/>
+			</c65>
+			<c66 id="238" n="channel 30" on="Enabled" off="Disabled" v="false">
+				<pos x="-4" y="-5.25"/>
+				<out1 v="false"/>
+			</c66>
+			<c67 id="239" n="channel 30 name" v="Test Value 30">
+				<pos x="-4" y="-4.75"/>
+			</c67>
+			<c68 id="240" n="channel 31" on="Enabled" off="Disabled" v="false">
+				<pos x="-4" y="-6.25"/>
+				<out1 v="false"/>
+			</c68>
+			<c69 id="241" n="channel 31 name" v="Test Value 31">
+				<pos x="-4" y="-5.75"/>
+			</c69>
+			<c70 id="242" n="channel 32" on="Enabled" off="Disabled" v="false">
+				<pos x="-4" y="-7.25"/>
+				<out1 v="false"/>
+			</c70>
+			<c71 id="243" n="channel 32 name" v="Test Value 32">
+				<pos x="-4" y="-6.75"/>
+			</c71>
+		</component_states>
+		<component_bridge_states>
+			<c0 id="2">
+				<pos x="-1.5" y="1"/>
+				<in1 component_id="0" node_index="0">
+					<v bools="0" 01="0" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+				</in1>
+				<out1>
+					<v bools="0" 01="0" 02="0" 03="0" 04="0" 05="0" 06="0" 07="0" 08="0" 09="0" 10="0" 11="0" 12="0" 13="0" 14="0" 15="0" 16="0" 17="0" 18="0" 19="0" 20="0" 21="0" 22="0" 23="0" 24="0" 25="0" 26="0" 27="0" 28="0" 29="0" 30="0" 31="0" 32="0"/>
+				</out1>
+			</c0>
+			<c1 id="6">
+				<pos x="4" y="0.75"/>
+				<in1 component_id="7" node_index="1">
+					<v/>
+				</in1>
+				<out1>
+					<v/>
+				</out1>
+			</c1>
+			<c2 id="11">
+				<pos x="0.25" y="0.25"/>
+				<in1 component_id="0" node_index="0" v="false"/>
+				<out1 v="false"/>
+			</c2>
+			<c3 id="14">
+				<pos x="-1" y="-0.25"/>
+				<in1 component_id="0" node_index="0" v="false"/>
+				<out1 v="false"/>
+			</c3>
+		</component_bridge_states>
+		<group_states/>
+	</group>
+</microprocessor>
+
